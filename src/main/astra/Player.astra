@@ -1,0 +1,204 @@
+
+import mams.web.HttpResponse;
+import mams.JSONConverter;
+import mams.JSONBuilder;
+import astra.jena.*;
+import com.fasterxml.jackson.databind.JsonNode;
+
+agent Player extends Shared {
+
+    //Apache Jena Knowledge Stores
+    module KnowledgeStore knowledgeStoreGame; //Agent-Game knowledge
+    
+    types player{
+        formula turn(boolean);
+        formula free(string);
+    }
+
+    inference free(string L) :- location(L) & ~takenLocations(string T, L);
+    initial http_fail_count(0), failure_threshold(10);
+    /**
+     * GOAL: !main
+     * Start the agent. 
+     * Add the agent attribute beliefs
+     * Add subgoal: !get_index_page
+     */
+    rule +!main([string url]) {
+
+        +api_index_url(url);
+
+        //Set up as a MAMS agent
+        MAMSAgent::!init();
+        MAMSAgent::!created("base");
+        IntegratedInbox::!created("inbox");
+
+        //Initialise my knowledge about myself
+        !itemProperty("base", "uri", funct agentUri);
+        string uri = F.valueAsString(agentUri, 0);
+        //This is what I know about myself - I have an @id field
+        +agent_attributes("@id", uri);
+        //I am an agent of the type defined in the ttt ontology
+        console.println("URL: " + uri);
+        +agent_attributes("@type", "ttt:Agent");
+        //This is the ttt ontology
+        string ontology = ttt.qualifiedName("");
+        +agent_attributes("@context", "{\"ttt\": \"" + ontology + "\"}");
+
+        !get_index_page();
+    }
+
+    /**
+     * Means-end reasoning
+     * GOAL: !get_index_page
+     * The KnowledgeStore essentially performs a GET request on the game_url
+     *  rule $knowledgeStoreGame.read(string url) <- this event is fired when the results of the GET request are 
+     * processed by the Knowledge Store
+     */
+    rule +!get_index_page() : ~game(string id, string role, string opponent) & api_index_url(string game_url) {
+        //TODO Part 1
+        knowledgeStoreGame.getKnowledge(game_url, "JSON-LD");
+    }
+
+    /**
+     * Deliberation rule
+     *
+     * The Knowledge Store has processed the URL, and this event is fired
+     * Now the triples from the Knowledge Store can be queried like beliefs
+     */
+
+
+    rule $knowledgeStoreGame.read(string url) {
+        // console.println("Processed information from " + url);
+        //TODO Part 1
+        !form_actions(url);
+        !link_actions(url);
+    }
+
+    
+    /**
+     * Deliberation rule
+     * A form_action has been added that ends with "register" 
+     */
+
+
+
+    rule +form_actions(string form_url, string http_method, list required_actions) : ~game(string id, string role, string opponent) & strings.endsWith(form_url, "register") & http_fail_count(int count) & agent_attributes(string id, string uri){
+        //TODO Part 1
+        
+        try
+        {
+            JsonNode bodyJson = builder.createObject();
+            builder.addProperty(bodyJson, id, uri);
+            string bodyStr = builder.toJsonString(bodyJson);
+            MAMSAgent::!post(form_url, bodyStr, HttpResponse response);
+            !clear_knowledge();
+        }
+        recover
+        {
+            -+http_fail_count(count + 1);
+            +form_actions(form_url, http_method, required_actions);
+            console.println("Something bad happened...");
+        }
+
+    }
+
+
+
+    /**
+     * Deliberation rule
+     * Too many failures... 
+     */
+    rule +http_fail_count(int i) : failure_threshold(int j) & (i >= j) {
+        console.println("Too many failures! Shutting down");
+        system.exit();
+    }
+
+    /**
+     * Means-end reasoning
+     * GOAL: !clear_knowledge
+     * This keeps things HATEOAS-y, i.e. each response from the API contains all the information the agent needs to 
+     * play a game; so the links, forms and knowledge store should be cleared down in between API calls
+     * to reflect this (and avoid situations where the agent may think it has actions available to it which are no longer valid)
+     */
+     rule +!clear_knowledge() {
+        knowledgeStoreGame.clear();
+        //Clear down ALL form action and link action beliefs
+        foreach(form_actions(string anyForm, string method_name, list any_list)) {
+            -form_actions(anyForm, method_name, any_list);
+        }
+        foreach(link_actions(string anyLink)) {
+            -link_actions(anyLink);
+        }
+    }
+
+    rule @message(inform, string sender, game(string id, string role, string opponent)) {
+        //TODO Part 2
+        console.println(" ");
+        console.println("I've been given the game " + id + " with role " + role + " and opponent " + opponent);
+        console.println(" ");
+        if(strings.equal(role, "XPlayerRole"))
+        {
+            // -turn(false);
+            -+game(id, role, opponent);
+            -+turn(true);
+        }
+        else
+        {
+            // -turn(true);
+            -+game(id, role, opponent);
+            -+turn(false);
+        }
+       
+    }
+
+    rule @message(inform, string sender, turn(true)) {
+        //TODO Part 3
+        -+turn(true);
+    }
+
+    rule @message(inform, string sender, winner(string win)) {
+        if(game(string id, string role, string opponent))
+        {
+            -game(id, role, opponent);
+        }
+        !clear_knowledge();
+        
+        system.sleep(500);
+        !gameReset();
+        !get_index_page();
+    }
+
+    rule @message(inform, string sender, takenLocations(string role, string loc))
+    {
+        +takenLocations(role, loc);
+    }
+
+
+    rule +turn(true) : game(string id, string role, string opponent) & api_index_url(string url) {
+        //TODO Part 3
+
+        knowledgeStoreGame.getKnowledge(url + "Board/" + id,"JSON-LD");
+    }
+
+    rule +!gameReset()
+    {
+        foreach(takenLocations(string role, string loc))
+        {
+            -takenLocations(role, loc);
+        }
+        if(turn(boolean t))
+        {
+            -turn(t);
+        }
+        if(currentAgents(string a1, string a2))
+        {
+            -agentSelection(a1, a2);
+            -currentAgents(a1, a2);
+        }
+    }
+
+    rule -turn(true) {
+        !clear_knowledge();
+    }
+
+}
